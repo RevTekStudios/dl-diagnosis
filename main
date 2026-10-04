@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Keyboard scanner diagnostic</title>
+<style>body{font:16px system-ui;background:#eef2f6;color:#172638;max-width:1000px;margin:35px auto;padding:0 22px}section{background:white;padding:24px;border-radius:12px;margin:18px 0}h1{margin-bottom:8px}button{padding:12px 18px;margin:5px;border:0;border-radius:7px;background:#174e80;color:white;cursor:pointer}button:disabled{opacity:.4}textarea{box-sizing:border-box;width:100%;height:150px;font:14px monospace}input{padding:10px;width:70%}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#edf2f7;padding:14px;max-height:300px;overflow:auto}.muted{color:#516177}#status{font-weight:bold}label{display:block;margin:12px 0}</style>
+<h1>Keyboard scanner diagnostic</h1>
+<p>Captures browser-visible events without parsing or correcting the barcode. No network requests, uploads, or automatic storage.</p>
+<section>
+<ol><li>Optionally label the card and scanner below.</li><li>Click <b>Start capture</b>, then scan one card. Do not type into the capture box.</li><li>Wait until the scanner finishes, then click <b>Finish capture</b>. Internal Enter and Tab keys do not end capture.</li><li>Repeat for each card, then export the diagnostic JSON.</li></ol>
+<label>Card / scanner label <input id="label" placeholder="e.g. Card 1, USB scanner"></label>
+<button id="start">Start capture</button><button id="finish" disabled>Finish capture</button><button id="export" disabled>Export all captures</button>
+<p id="status" role="status">Ready. Capture is not running.</p>
+<textarea id="target" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="Scanner capture area" placeholder="Scanner text will appear here"></textarea>
+<p class="muted">Tab navigation and browser shortcuts are suppressed during capture where possible. Enter is allowed into the text box. These choices are recorded in the export. Browser events cannot reveal bytes the scanner never transmits.</p>
+</section><section><h2>Captured scans</h2><div id="results">None yet.</div></section>
+<p class="muted">Exports contain license data. Keep them private. Closing or reloading this page discards captures that have not been exported.</p>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const captures=[]; let active=null, startTime=0, lastTime=0, idleTimer;
+const controlNames={0:'NUL',9:'TAB',10:'LF',13:'CR',27:'ESC',28:'FS',29:'GS',30:'RS',31:'US',127:'DEL'};
+function visible(s){return [...s].map(c=>{const n=c.codePointAt(0);return n<32||n===127?`<${controlNames[n]||'U+'+n.toString(16).padStart(4,'0')}>`:c}).join('');}
+function record(type, details={}){if(!active)return;const now=performance.now();active.events.push({type,ms:+(now-startTime).toFixed(3),gapMs:+(now-lastTime).toFixed(3),...details});lastTime=now;}
+function activity(){clearTimeout(idleTimer);$('status').textContent=`Capturing: ${active.events.length} events. Wait for scanner completion, then Finish capture.`;idleTimer=setTimeout(()=>{if(active)$('status').textContent='No events for 1.5 seconds. Capture remains open; click Finish capture when the scanner is done.'},1500);}
+$('start').onclick=()=>{active={label:$('label').value.trim()||`Card ${captures.length+1}`,startedAt:new Date().toISOString(),events:[]};startTime=lastTime=performance.now();$('target').value='';$('start').disabled=true;$('finish').disabled=false;$('export').disabled=true;$('label').disabled=true;$('target').focus();record('capture-start');$('status').textContent='Capturing. Scan one card now.'};
+for(const type of ['keydown','keyup'])document.addEventListener(type,e=>{
+ if(!active)return;
+ const suppress=type==='keydown'&&(e.key==='Tab'||((e.ctrlKey||e.altKey||e.metaKey)&&!['Control','Alt','Meta','Shift','AltGraph'].includes(e.key)));
+ record(type,{key:e.key,code:e.code,keyCode:e.keyCode,location:e.location,repeat:e.repeat,ctrl:e.ctrlKey,alt:e.altKey,shift:e.shiftKey,meta:e.metaKey,altGraph:e.getModifierState('AltGraph'),isComposing:e.isComposing,trusted:e.isTrusted,target:e.target.id||e.target.tagName,defaultPrevented:e.defaultPrevented,suppressedByDiagnostic:suppress});
+ if(suppress)e.preventDefault();activity();
+},true);
+for(const type of ['beforeinput','input','compositionstart','compositionupdate','compositionend','paste','focus','blur'])$('target').addEventListener(type,e=>{if(!active)return;record(type,{data:e.data??null,inputType:e.inputType??null,isComposing:e.isComposing??null,trusted:e.isTrusted,value:$('target').value,selectionStart:$('target').selectionStart,selectionEnd:$('target').selectionEnd,...(type==='paste'?{pastedText:e.clipboardData?.getData('text/plain')??null}:{})});activity()});
+document.addEventListener('visibilitychange',()=>record('visibilitychange',{state:document.visibilityState}));
+window.addEventListener('blur',()=>record('window-blur'));window.addEventListener('focus',()=>record('window-focus'));
+function summary(c){const counts={};for(const ch of c.text){const n=ch.codePointAt(0);if(n<32||n===127){const k=controlNames[n]||String(n);counts[k]=(counts[k]||0)+1;}}const keys=c.events.filter(e=>e.type==='keydown');return {textLength:c.text.length,controlCharacters:counts,keydowns:keys.length,enterKeys:keys.filter(e=>e.key==='Enter').length,tabKeys:keys.filter(e=>e.key==='Tab').length,modifierCombinations:keys.filter(e=>e.ctrl||e.alt||e.meta).length,ansiHeaders:(c.text.match(/ANSI /g)||[]).length,maxKeydownGapMs:keys.reduce((m,e,i)=>i?Math.max(m,e.ms-keys[i-1].ms):m,0)};}
+$('finish').onclick=()=>{if(!active)return;record('capture-finish');active.text=$('target').value;active.visibleText=visible(active.text);active.durationMs=+(performance.now()-startTime).toFixed(3);active.summary=summary(active);captures.push(active);active=null;clearTimeout(idleTimer);$('start').disabled=false;$('finish').disabled=true;$('export').disabled=false;$('label').disabled=false;$('label').value='';$('status').textContent=`Saved ${captures.length} capture(s) in memory. Export before closing.`;$('results').replaceChildren();for(const c of captures){const d=document.createElement('details'),s=document.createElement('summary'),p=document.createElement('pre');s.textContent=`${c.label}: ${c.summary.textLength} characters, ${c.summary.enterKeys} Enter keys, ${c.summary.tabKeys} Tab keys`;p.textContent=JSON.stringify(c.summary,null,2)+'\n\n'+c.visibleText;d.append(s,p);$('results').append(d)}};
+$('export').onclick=()=>{const payload={format:'officer-assist-keyboard-diagnostic',version:1,exportedAt:new Date().toISOString(),environment:{userAgent:navigator.userAgent,platform:navigator.platform,language:navigator.language,timeOrigin:performance.timeOrigin},capturePolicy:{manualFinish:true,idleNoticeMs:1500,tabDefaultPrevented:true,modifiedNonModifierKeydownDefaultPrevented:true,enterDefaultPrevented:false,textNormalizedByTextarea:true,noBarcodeParsing:true},captures};const url=URL.createObjectURL(new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='scanner-diagnostic-'+new Date().toISOString().replace(/[:.]/g,'-')+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),10000)};
+window.addEventListener('beforeunload',e=>{if(active||captures.length){e.preventDefault();e.returnValue=''}});
+</script></html>
